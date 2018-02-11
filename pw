@@ -296,10 +296,10 @@ def modify_file(pin, data, count):
     backtrack(3)
 
 
-    print("Current username for the '%s' account:\n" % service)
-    print("   %s\n" % data[service]["description"])
-
     try:
+        print("Current username for the '%s' account:\n" % service)
+        print("   %s\n" % data[service]["description"])
+
         print("Enter a new username for the '%s' account [or leave blank to keep the current '%s' username]\n" % (new_name, service))
         desc = raw_input('New username: ')
         if desc == "":
@@ -319,7 +319,7 @@ def modify_file(pin, data, count):
         print("   %s\n" % decrypt(pin, data[service]["encr_secret"]))
 
         print("Enter a new password for the '%s' account [or leave blank to keep the current '%s' password]\n" % (new_name, service))
-        secret = raw_input('New secret MFA key: ')
+        secret = raw_input('New password: ')
         if secret == "":
             secret = decrypt(pin, data[service]["encr_secret"])
     except KeyboardInterrupt:
