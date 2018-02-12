@@ -1,0 +1,528 @@
+#!/usr/bin/python
+
+"""
+Install local Python 2.7 dependency:
+  - sudo pip install pycrypto
+"""
+
+
+import getpass
+import json
+import os
+import sys
+import time
+
+from hashlib import md5
+from base64 import b64decode
+from base64 import b64encode
+from Crypto import Random
+from Crypto.Cipher import AES
+
+
+home_dir=os.path.expanduser('~')
+pw_file='%s/.pw-encr' % home_dir
+
+BLOCK_SIZE = 16
+pad = lambda s: s + (BLOCK_SIZE - len(s) % BLOCK_SIZE) * chr(BLOCK_SIZE - len(s) % BLOCK_SIZE)
+unpad = lambda s: s[:-ord(s[-1])]
+
+
+def check_file():
+    if os.path.isfile(pw_file):
+        read_file()
+    else:
+        create_file()
+
+
+def create_file():
+    print("\nNo password json file found; creating new '%s' file" % pw_file)
+    prompt_action_new()
+
+
+def prompt_action_new():
+    add = set(['add','a','ad'])
+    quit = set(['quit','q'])
+
+    print("\nAvailable actions:\n"
+          "   Type [A] to add a new account (service/username/password)\n"
+          "   Type [Q] to quit\n\n")
+
+    try:
+        not_answered = True
+        while not_answered:
+            backtrack(1)
+            choice = raw_input("Selection: ").lower()
+            if choice not in add and choice not in quit:
+                backtrack(1)
+                print("You must make a valid choice!")
+                time.sleep(2)
+            else:
+                not_answered = False
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(7)
+        sys.exit()
+
+    backtrack(8)
+
+    if choice in add:
+        data = {}
+        add_to_file(set_pin(), data)
+    else:
+        sys.exit()
+
+
+def set_pin():
+    pin1 = "a"
+    pin2 = "b"
+    min_digits = 8
+
+    print("\nPlease enter a new encryption master password (minimum %d digits)\n\n" % min_digits)
+
+    try:
+        while pin1 != pin2 or len(str(pin1)) < min_digits or len(str(pin2)) < min_digits:
+            while len(str(pin1)) < min_digits:
+                backtrack(1)
+                pin1 = getpass.getpass('New master password: ', stream=sys.stdout)
+                if len(str(pin1)) < min_digits:
+                    backtrack(1)
+                    print("The master password must be at least %d digits; please try again" % min_digits)
+                    time.sleep(2.5)
+
+            while len(str(pin2)) < min_digits:
+                backtrack(1)
+                pin2 = getpass.getpass('Re-enter master password: ', stream=sys.stdout)
+                if len(str(pin2)) < min_digits:
+                    backtrack(1)
+                    print("The master password must be at least %d digits; please try again" % min_digits)
+                    time.sleep(2.5)
+
+            if pin1 != pin2:
+                backtrack(1)
+                print("Master password don't match; please try again")
+                time.sleep(2)
+                pin1 = "a"
+                pin2 = "b"
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(3)
+        check_file()
+
+    backtrack(1)
+    print("Master Password Accepted!")
+    time.sleep(1)
+    backtrack(4)
+
+    return pin2
+
+
+def read_file(pin=None, show_encr=True):
+    print("\nExisting '%s' password json file found" % pw_file)
+
+    try:
+        data = json.load(open(pw_file))
+
+    except ValueError:
+        print("\njson formatting error; exiting...\n")
+        sys.exit()
+
+    if len(data) == 0:
+        prompt_action_new()
+    else:
+        print("\nIdentified the following accounts:")
+
+        count = 0
+        for service in sorted(data.iterkeys()):
+            count += 1
+            print("\n[%d]" % count)
+            print("   Service: %s" % service)
+            print("   Username: %s" % data[service]["username"])
+
+            if show_encr:
+                print("   Encrypted Password: %s" % data[service]["encr_secret"])
+            else:
+                try:
+                    print("   Decrypted Password: %s" % decrypt(str(pin), data[service]["encr_secret"]))
+                except UnicodeDecodeError:
+                    decode_error(3 + 5 * count)
+                    check_file()
+
+        prompt_action_exists(data, count)
+
+
+def prompt_action_exists(data, count):
+    add = set(['add','a','ad'])
+    modify = set(['modify','m','mod'])
+    delete = set(['delete','d','del'])
+    show = set(['show','s'])
+    quit = set(['quit','q'])
+
+    print("\nAvailable actions:\n"
+          "   Type [A] to add a new account\n"
+          "   Type [M] to modify an existing account\n"
+          "   Type [D] to delete an existing account\n"
+          "   Type [S] to show the decrypted passwords in plaintext\n"
+          "   Type [Q] to quit\n\n")
+
+    try:
+        not_answered = True
+        while not_answered:
+            backtrack(1)
+            choice = raw_input("Selection: ").lower()
+            if choice not in add and choice not in modify and choice not in delete and choice not in show and choice not in quit:
+                backtrack(1)
+                print("You must make a valid choice!")
+                time.sleep(2)
+            else:
+                not_answered = False
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(12 + 5 * count)
+        sys.exit()
+
+    if choice not in quit:
+        pin = get_pin(count)
+
+    backtrack(13 + 5 * count)
+
+    if choice in add:
+        add_to_file(pin, data)
+    elif choice in modify:
+        modify_file(pin, data, count)
+    elif choice in delete:
+        delete_from_file(pin, data, count)
+    elif choice in show:
+        read_file(pin, False)
+    else:
+        sys.exit()
+
+
+def get_pin(count):
+    backtrack(1)
+
+    try:
+        pin = getpass.getpass('Enter your master password: ', stream=sys.stdout)
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(12 + 5 * count)
+        check_file()
+
+    backtrack(1)
+    print("Master Password Accepted!")
+    time.sleep(1)
+
+    return pin
+
+
+def add_to_file(pin, data):
+    print("\n***Add to file***\n\n")
+
+    try:
+        backtrack(1)
+        print("Enter the service name of the new account to add, e.g. amazon.com\n")
+        service = raw_input('Service: ')
+
+        backtrack(3)
+        print("Enter a username for the '%s' account, e.g. frank.zappa@gmail.com\n" % service)
+        username = raw_input('Username: ')
+
+        secret = ""
+        while len(str(secret)) < 4:
+            backtrack(3)
+            print("Enter the account's password\n")
+            secret = raw_input('Password: ')
+            if len(str(secret)) < 4:
+                backtrack(1)
+                print("The password must be at least %d characters; please try again" % 4)
+                time.sleep(2.5)
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(5)
+        check_file()
+
+    backtrack(3)
+    print("New account details:\n")
+    print("   Service: %s" % service)
+    print("   Username: %s" % username)
+    print("   Password: %s\n\n" % secret)
+
+    try:
+        backtrack(1)
+        confirm = prompt_yes_no("Add the new account? [y/n]: ")
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(9)
+        check_file()
+
+    if confirm:
+        data[service] = {'username':username, 'encr_secret':encrypt(str(pin), secret)}
+        mod_data = json.dumps(data, sort_keys=True, indent=4, separators=(',', ': '))
+        process_file(mod_data)
+        backtrack(1)
+        print("Successfully added new account!")
+    else:
+        backtrack(1)
+        print("Action cancelled!")
+
+    time.sleep(2)
+    backtrack(10)
+    check_file()
+
+
+def modify_file(pin, data, count):
+    print("\n***Modify file***\n")
+
+    print("Available accounts:\n")
+    for service in sorted(data.iterkeys()):
+        print("   Service: %s" % service)
+    print("\n")
+
+    try:
+        not_answered = True
+        while not_answered:
+            backtrack(1)
+            print("Enter the service name of the account to modify, e.g. amazon.com\n")
+            service = raw_input('Service: ')
+            if service not in data.iterkeys():
+                backtrack(1)
+                print("You must make a valid choice!")
+                time.sleep(2)
+                backtrack(2)
+            else:
+                not_answered = False
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(8 + count)
+        check_file()
+
+    backtrack(1)
+    print("Modifying account details for '%s'" % service)
+    time.sleep(1.5)
+    backtrack(6 + count)
+
+
+    try:
+        print("Enter a new name for the '%s' service [or leave blank to keep the current '%s' name]\n" % (service, service))
+        new_name = raw_input('New service name: ')
+        if new_name == "":
+            new_name = service
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(5)
+        check_file()
+
+    backtrack(1)
+    print("Input received!")
+    time.sleep(1)
+    backtrack(3)
+
+
+    try:
+        print("Current username for the '%s' account:\n" % service)
+        print("   %s\n" % data[service]["username"])
+
+        print("Enter a new username for the '%s' account [or leave blank to keep the current '%s' username]\n" % (new_name, service))
+        username = raw_input('New username: ')
+        if username == "":
+            username = data[service]["username"]
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(9)
+        check_file()
+
+    backtrack(1)
+    print("Input received!")
+    time.sleep(1)
+    backtrack(7)
+
+
+    try:
+        print("Current decrypted password of the '%s' account:\n" % service)
+        print("   %s\n" % decrypt(pin, data[service]["encr_secret"]))
+
+        secret = "nil"
+        while not ( len(str(secret)) == 0 or len(str(secret)) > 3 ):
+            print("Enter a new password for the '%s' account [or leave blank to keep the current '%s' password]\n" % (new_name, service))
+            secret = raw_input('New password: ')
+            if secret == "":
+                secret = decrypt(pin, data[service]["encr_secret"])
+            elif len(str(secret)) < 4:
+                backtrack(1)
+                print("The password must be at least %d characters; please try again" % 4)
+                time.sleep(2.5)
+                backtrack(3)
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(9)
+        check_file()
+    except UnicodeDecodeError:
+        decode_error(5)
+        check_file()
+
+    backtrack(1)
+    print("Input received!")
+    time.sleep(1)
+    backtrack(7)
+
+
+    print("Modified account details:\n")
+    print("   Service: %s" % new_name)
+    print("   Username: %s" % username)
+    print("   Password: %s\n" % secret)
+
+    try:
+        confirm = prompt_yes_no("Update the account? [y/n]: ")
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(9)
+        check_file()
+
+    if confirm:
+        del data[service]
+        data[new_name] = {'username':username, 'encr_secret':encrypt(str(pin), secret)}
+        mod_data = json.dumps(data, sort_keys=True, indent=4, separators=(',', ': '))
+        process_file(mod_data)
+        backtrack(1)
+        print("Successfully modified account!")
+    else:
+        backtrack(1)
+        print("Action cancelled!")
+
+    time.sleep(2)
+    backtrack(10)
+    read_file()
+
+
+def delete_from_file(pin, data, count):
+    print("\n***Delete from file***\n")
+
+    print("Available accounts:\n")
+    for service in sorted(data.iterkeys()):
+        print("   Service: %s" % service)
+    print("\n")
+
+    try:
+        not_answered = True
+        while not_answered:
+            backtrack(1)
+            print("Enter the service name of the account to delete, e.g. amazon.com\n")
+            service = raw_input('Service: ')
+            if service not in data.iterkeys():
+                backtrack(1)
+                print("You must make a valid choice!")
+                time.sleep(2)
+                backtrack(2)
+            else:
+                not_answered = False
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(8 + count)
+        check_file()
+
+    backtrack(1)
+    print("Input received!")
+    time.sleep(1)
+    backtrack(6 + count)
+
+
+    try:
+        print("Account selected for deletion:\n")
+        print("   Service: %s" % service)
+        print("   Username: %s" % data[service]["username"])
+        print("   Password: %s\n" % decrypt(pin, data[service]["encr_secret"]))
+
+    except UnicodeDecodeError:
+        decode_error(7)
+        check_file()
+
+    try:
+        confirm = prompt_yes_no("Delete the account? [y/n]: ")
+
+    except KeyboardInterrupt:
+        keyboard_interrupt(9)
+        check_file()
+
+    if confirm:
+        del data[service]
+        mod_data = json.dumps(data, sort_keys=True, indent=4, separators=(',', ': '))
+        process_file(mod_data)
+        backtrack(1)
+        print("Successfully deleted account!")
+    else:
+        backtrack(1)
+        print("Action cancelled!")
+
+    time.sleep(2)
+    backtrack(10)
+    read_file()
+
+
+def prompt_yes_no(message):
+    yes = set(['yes','y', 'ye'])
+    no = set(['no','n'])
+
+    not_answered = True
+    while not_answered:
+        backtrack(1)
+        choice = raw_input("\n%s" % message).lower()
+        if choice not in yes and choice not in no:
+            backtrack(1)
+            print("You must make a valid choice!")
+            time.sleep(2)
+            backtrack(1)
+        else:
+            not_answered = False
+
+    if choice in yes:
+        return True
+    elif choice in no:
+        return False
+
+
+def encrypt(pin, raw):
+    raw = pad(raw)
+    iv = Random.new().read(AES.block_size)
+    cipher = AES.new(keygen(pin), AES.MODE_CBC, iv)
+    return b64encode(iv + cipher.encrypt(raw))
+
+
+def decrypt(pin, enc):
+    enc = b64decode(enc)
+    iv = enc[:16]
+    cipher = AES.new(keygen(pin), AES.MODE_CBC, iv)
+    return unpad(cipher.decrypt(enc[16:])).decode('utf8')
+
+
+def keygen(key):
+    return md5(key.encode('utf8')).hexdigest()
+
+
+def process_file(data):
+    file = open(pw_file, "w")
+    file.write(data)
+    file.close()
+
+
+def backtrack(rows):
+    for x in range(rows):
+        sys.stdout.write("\033[1A\033[2K")
+
+
+def keyboard_interrupt(rows):
+    sys.stdout.write("\033[2K")
+    backtrack(rows)
+    print("\nInput cancelled; exiting...\n")
+    time.sleep(2)
+    backtrack(3)
+
+
+def decode_error(rows):
+    backtrack(rows)
+    print("\nBad master password; exiting...\n")
+    time.sleep(2)
+    backtrack(3)
+
+
+if __name__ == "__main__":
+    check_file()
+
